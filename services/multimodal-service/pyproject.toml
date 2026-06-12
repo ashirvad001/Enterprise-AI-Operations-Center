@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "multimodal-service"
+version = "0.1.0"
+description = "EAIOC Multimodal Service (Vision and Image Parsing)"
+authors = ["EAIOC Team <team@eaioc.dev>"]
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+python-multipart = "^0.0.6"
+pillow = "^10.2.0"
+eaioc-core = {path = "../../packages/eaioc-core", develop = true}
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,1681 @@
+openapi: 3.1.0
+info:
+  title: Enterprise AI Operations Center API
+  description: |
+    Unified API for the Enterprise AI Operations Center — Multi-Agent Orchestration,
+    Secure RAG, Multimodal Understanding, Voice Interface, Edge Deployment,
+    Enterprise RBAC Security, and MLOps Observability.
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: api-support@eaioc.dev
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://api.eaioc.example.com/api/v1
+    description: Production
+  - url: https://api-staging.eaioc.example.com/api/v1
+    description: Staging
+  - url: http://localhost:8000/api/v1
+    description: Local Development
+
+tags:
+  - name: Authentication
+    description: User registration, login, SSO, MFA, and session management
+  - name: Users
+    description: User profile and API key management
+  - name: RBAC
+    description: Role-based access control, teams, and permissions
+  - name: Agents
+    description: Agent CRUD, workflow management, and execution
+  - name: RAG
+    description: Knowledge base management, document ingestion, and search
+  - name: Multimodal
+    description: Image, video, audio, and document analysis
+  - name: Voice
+    description: Voice sessions, STT/TTS configuration
+  - name: Edge
+    description: Edge device management, model deployment, and telemetry
+  - name: MLOps
+    description: Cost tracking, metrics, evaluations, and drift detection
+  - name: Audit
+    description: Immutable audit log search and export
+  - name: Health
+    description: System health checks and readiness probes
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+paths:
+  # ==================== AUTHENTICATION ====================
+  /auth/register:
+    post:
+      tags: [Authentication]
+      operationId: registerUser
+      summary: Register new user and organization
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/login:
+    post:
+      tags: [Authentication]
+      operationId: loginUser
+      summary: Login with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/LoginResponse'
+                  - $ref: '#/components/schemas/MFARequiredResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      operationId: refreshToken
+      summary: Refresh access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logoutUser
+      summary: Revoke current session
+      responses:
+        '204':
+          description: Session revoked
+
+  /auth/mfa/enable:
+    post:
+      tags: [Authentication]
+      operationId: enableMFA
+      summary: Enable TOTP MFA for current user
+      responses:
+        '200':
+          description: MFA setup data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MFASetupResponse'
+
+  /auth/mfa/verify:
+    post:
+      tags: [Authentication]
+      operationId: verifyMFA
+      summary: Verify TOTP code during login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_token, totp_code]
+              properties:
+                mfa_token:
+                  type: string
+                totp_code:
+                  type: string
+                  pattern: '^\d{6}$'
+      responses:
+        '200':
+          description: MFA verified, tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/sso/initiate:
+    get:
+      tags: [Authentication]
+      operationId: initiateSSOLogin
+      summary: Initiate SSO login flow
+      security: []
+      parameters:
+        - name: provider
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [okta, azure_ad, google, custom]
+        - name: tenant_slug
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to identity provider
+
+  /auth/sso/callback:
+    post:
+      tags: [Authentication]
+      operationId: completeSSOLogin
+      summary: Handle SSO callback
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                SAMLResponse:
+                  type: string
+                RelayState:
+                  type: string
+      responses:
+        '200':
+          description: SSO login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+
+  # ==================== USERS ====================
+  /users/me:
+    get:
+      tags: [Users]
+      operationId: getCurrentUser
+      summary: Get current user profile
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+    put:
+      tags: [Users]
+      operationId: updateCurrentUser
+      summary: Update current user profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+
+  /users/me/api-keys:
+    get:
+      tags: [Users]
+      operationId: listApiKeys
+      summary: List user's API keys
+      responses:
+        '200':
+          description: API key list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyListResponse'
+    post:
+      tags: [Users]
+      operationId: createApiKey
+      summary: Create new API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateApiKeyRequest'
+      responses:
+        '201':
+          description: API key created (key shown only once)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCreatedResponse'
+
+  /users/me/api-keys/{keyId}:
+    delete:
+      tags: [Users]
+      operationId: revokeApiKey
+      summary: Revoke API key
+      parameters:
+        - $ref: '#/components/parameters/KeyId'
+      responses:
+        '204':
+          description: API key revoked
+
+  # ==================== AGENTS ====================
+  /agents:
+    get:
+      tags: [Agents]
+      operationId: listAgents
+      summary: List agents
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/PageSize'
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, inactive]
+      responses:
+        '200':
+          description: Agent list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentListResponse'
+    post:
+      tags: [Agents]
+      operationId: createAgent
+      summary: Create new agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentRequest'
+      responses:
+        '201':
+          description: Agent created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+
+  /agents/{agentId}:
+    get:
+      tags: [Agents]
+      operationId: getAgent
+      summary: Get agent details
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Agent details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Agents]
+      operationId: updateAgent
+      summary: Update agent configuration
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAgentRequest'
+      responses:
+        '200':
+          description: Agent updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+    delete:
+      tags: [Agents]
+      operationId: deleteAgent
+      summary: Delete agent (soft)
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '204':
+          description: Agent deleted
+
+  /agents/{agentId}/execute:
+    post:
+      tags: [Agents]
+      operationId: executeAgent
+      summary: Execute single agent
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteAgentRequest'
+      responses:
+        '200':
+          description: Synchronous execution result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentExecutionResult'
+        '202':
+          description: Async execution started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionCreatedResponse'
+
+  # ==================== WORKFLOWS ====================
+  /workflows:
+    get:
+      tags: [Agents]
+      operationId: listWorkflows
+      summary: List workflows
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Workflow list
+    post:
+      tags: [Agents]
+      operationId: createWorkflow
+      summary: Create workflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkflowRequest'
+      responses:
+        '201':
+          description: Workflow created
+
+  /workflows/{workflowId}/execute:
+    post:
+      tags: [Agents]
+      operationId: executeWorkflow
+      summary: Execute workflow
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteWorkflowRequest'
+      responses:
+        '202':
+          description: Execution started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionCreatedResponse'
+
+  /workflows/executions/{executionId}:
+    get:
+      tags: [Agents]
+      operationId: getExecution
+      summary: Get execution details with steps
+      parameters:
+        - $ref: '#/components/parameters/ExecutionId'
+      responses:
+        '200':
+          description: Execution details
+
+  /workflows/executions/{executionId}/approve:
+    post:
+      tags: [Agents]
+      operationId: approveStep
+      summary: Approve or reject HITL step
+      parameters:
+        - $ref: '#/components/parameters/ExecutionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApproveStepRequest'
+      responses:
+        '200':
+          description: Decision recorded
+
+  # ==================== RAG ====================
+  /rag/knowledge-bases:
+    get:
+      tags: [RAG]
+      operationId: listKnowledgeBases
+      summary: List knowledge bases
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Knowledge base list
+    post:
+      tags: [RAG]
+      operationId: createKnowledgeBase
+      summary: Create knowledge base
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateKnowledgeBaseRequest'
+      responses:
+        '201':
+          description: Knowledge base created
+
+  /rag/knowledge-bases/{kbId}/documents:
+    post:
+      tags: [RAG]
+      operationId: uploadDocument
+      summary: Upload document to knowledge base
+      parameters:
+        - $ref: '#/components/parameters/KBId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Document file (PDF, DOCX, HTML, MD, TXT, CSV)
+                metadata:
+                  type: string
+                  description: JSON metadata string
+      responses:
+        '202':
+          description: Document accepted for processing
+
+  /rag/search:
+    post:
+      tags: [RAG]
+      operationId: searchRAG
+      summary: Search across knowledge bases
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RAGSearchRequest'
+      responses:
+        '200':
+          description: Search results with citations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RAGSearchResponse'
+
+  # ==================== MULTIMODAL ====================
+  /multimodal/analyze/image:
+    post:
+      tags: [Multimodal]
+      operationId: analyzeImage
+      summary: Analyze image using vision LLM
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                prompt:
+                  type: string
+                  default: "Describe this image in detail."
+                model:
+                  type: string
+                  default: "gpt-4o"
+      responses:
+        '200':
+          description: Analysis result
+
+  /multimodal/transcribe:
+    post:
+      tags: [Multimodal]
+      operationId: transcribeAudio
+      summary: Transcribe audio file
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Audio file (WAV, MP3, FLAC)
+                language:
+                  type: string
+                  default: "en"
+      responses:
+        '200':
+          description: Transcription result
+
+  # ==================== VOICE ====================
+  /voice/sessions:
+    post:
+      tags: [Voice]
+      operationId: createVoiceSession
+      summary: Create voice session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVoiceSessionRequest'
+      responses:
+        '201':
+          description: Voice session created with WebSocket URL
+
+  # ==================== EDGE ====================
+  /edge/devices:
+    get:
+      tags: [Edge]
+      operationId: listEdgeDevices
+      summary: List registered edge devices
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [registered, online, offline, error, decommissioned]
+      responses:
+        '200':
+          description: Device list
+    post:
+      tags: [Edge]
+      operationId: registerDevice
+      summary: Register new edge device
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterDeviceRequest'
+      responses:
+        '201':
+          description: Device registered
+
+  /edge/devices/{deviceId}/telemetry:
+    get:
+      tags: [Edge]
+      operationId: getDeviceTelemetry
+      summary: Get device telemetry
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Telemetry data
+
+  # ==================== MLOPS ====================
+  /mlops/cost/summary:
+    get:
+      tags: [MLOps]
+      operationId: getCostSummary
+      summary: Get cost summary
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [daily, weekly, monthly]
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Cost summary
+
+  /mlops/cost/breakdown:
+    get:
+      tags: [MLOps]
+      operationId: getCostBreakdown
+      summary: Cost breakdown by dimension
+      parameters:
+        - name: group_by
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [agent, user, team, model, provider]
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [daily, weekly, monthly]
+      responses:
+        '200':
+          description: Cost breakdown
+
+  # ==================== AUDIT ====================
+  /audit/events:
+    get:
+      tags: [Audit]
+      operationId: searchAuditEvents
+      summary: Search audit events
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/PageSize'
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: outcome
+          in: query
+          schema:
+            type: string
+            enum: [success, failure, denied, error]
+        - name: user_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: resource_type
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Audit events
+
+  /audit/integrity:
+    get:
+      tags: [Audit]
+      operationId: verifyAuditIntegrity
+      summary: Verify audit hash chain integrity
+      responses:
+        '200':
+          description: Integrity verification result
+
+  # ==================== HEALTH ====================
+  /health:
+    get:
+      tags: [Health]
+      operationId: healthCheck
+      summary: System health check
+      security: []
+      responses:
+        '200':
+          description: System is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: System is unhealthy
+
+  /health/ready:
+    get:
+      tags: [Health]
+      operationId: readinessCheck
+      summary: Kubernetes readiness probe
+      security: []
+      responses:
+        '200':
+          description: Service is ready
+        '503':
+          description: Service is not ready
+
+  /health/live:
+    get:
+      tags: [Health]
+      operationId: livenessCheck
+      summary: Kubernetes liveness probe
+      security: []
+      responses:
+        '200':
+          description: Service is alive
+        '503':
+          description: Service is not alive
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from /auth/login or /auth/sso/callback
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key obtained from /users/me/api-keys
+
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      description: Pagination cursor from previous response
+      schema:
+        type: string
+    PageSize:
+      name: page_size
+      in: query
+      description: Number of items per page
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    AgentId:
+      name: agentId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    WorkflowId:
+      name: workflowId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ExecutionId:
+      name: executionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    KBId:
+      name: kbId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    KeyId:
+      name: keyId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    # ---- Auth Schemas ----
+    RegisterRequest:
+      type: object
+      required: [email, password, full_name, organization_name]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 320
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+        full_name:
+          type: string
+          maxLength: 255
+        organization_name:
+          type: string
+          maxLength: 255
+
+    RegisterResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            user_id:
+              type: string
+              format: uuid
+            email:
+              type: string
+            tenant_id:
+              type: string
+              format: uuid
+            organization_name:
+              type: string
+            is_verified:
+              type: boolean
+            message:
+              type: string
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    LoginResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            access_token:
+              type: string
+            refresh_token:
+              type: string
+            token_type:
+              type: string
+              enum: [Bearer]
+            expires_in:
+              type: integer
+              description: Access token TTL in seconds
+            user:
+              $ref: '#/components/schemas/UserSummary'
+
+    MFARequiredResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            mfa_required:
+              type: boolean
+              enum: [true]
+            mfa_token:
+              type: string
+            message:
+              type: string
+
+    MFASetupResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            secret:
+              type: string
+            qr_code_uri:
+              type: string
+              format: uri
+            backup_codes:
+              type: array
+              items:
+                type: string
+
+    # ---- User Schemas ----
+    UserSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        full_name:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        roles:
+          type: array
+          items:
+            type: string
+
+    UserResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+            full_name:
+              type: string
+            tenant_id:
+              type: string
+              format: uuid
+            is_active:
+              type: boolean
+            is_verified:
+              type: boolean
+            mfa_enabled:
+              type: boolean
+            roles:
+              type: array
+              items:
+                type: string
+            teams:
+              type: array
+              items:
+                type: string
+            last_login_at:
+              type: string
+              format: date-time
+            created_at:
+              type: string
+              format: date-time
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        full_name:
+          type: string
+          maxLength: 255
+        avatar_url:
+          type: string
+          format: uri
+        metadata:
+          type: object
+
+    CreateApiKeyRequest:
+      type: object
+      required: [name, scopes]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        scopes:
+          type: array
+          items:
+            type: string
+        expires_in_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+
+    ApiKeyCreatedResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            key:
+              type: string
+              description: Full API key — shown only once
+            prefix:
+              type: string
+            name:
+              type: string
+            scopes:
+              type: array
+              items:
+                type: string
+            expires_at:
+              type: string
+              format: date-time
+
+    ApiKeyListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              prefix:
+                type: string
+              name:
+                type: string
+              scopes:
+                type: array
+                items:
+                  type: string
+              is_active:
+                type: boolean
+              last_used_at:
+                type: string
+                format: date-time
+              created_at:
+                type: string
+                format: date-time
+              expires_at:
+                type: string
+                format: date-time
+
+    # ---- Agent Schemas ----
+    CreateAgentRequest:
+      type: object
+      required: [name, type, model_config]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        type:
+          type: string
+          enum: [conversational, research, code_review, data_analysis, custom]
+        model_config:
+          $ref: '#/components/schemas/ModelConfig'
+        system_prompt:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolConfig'
+        guardrails:
+          $ref: '#/components/schemas/Guardrails'
+        cost_budget:
+          $ref: '#/components/schemas/CostBudget'
+
+    UpdateAgentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        model_config:
+          $ref: '#/components/schemas/ModelConfig'
+        system_prompt:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolConfig'
+        guardrails:
+          $ref: '#/components/schemas/Guardrails'
+        cost_budget:
+          $ref: '#/components/schemas/CostBudget'
+        is_active:
+          type: boolean
+
+    AgentResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            description:
+              type: string
+            version:
+              type: string
+            type:
+              type: string
+            status:
+              type: string
+            model_config:
+              $ref: '#/components/schemas/ModelConfig'
+            tools:
+              type: array
+              items:
+                $ref: '#/components/schemas/ToolConfig'
+            guardrails:
+              $ref: '#/components/schemas/Guardrails'
+            cost_budget:
+              $ref: '#/components/schemas/CostBudget'
+            created_by:
+              type: string
+              format: uuid
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+
+    AgentListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentResponse'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    ModelConfig:
+      type: object
+      required: [provider, model]
+      properties:
+        provider:
+          type: string
+          enum: [openai, anthropic, google, mistral, ollama, custom]
+        model:
+          type: string
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 0.7
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 128000
+          default: 4096
+        top_p:
+          type: number
+          default: 1.0
+        fallback_chain:
+          type: array
+          items:
+            type: object
+            properties:
+              provider:
+                type: string
+              model:
+                type: string
+
+    ToolConfig:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        config:
+          type: object
+
+    Guardrails:
+      type: object
+      properties:
+        block_pii:
+          type: boolean
+          default: false
+        pii_types:
+          type: array
+          items:
+            type: string
+        content_filter:
+          type: string
+          enum: [none, moderate, strict]
+          default: moderate
+        require_citations:
+          type: boolean
+          default: false
+        max_output_tokens:
+          type: integer
+
+    CostBudget:
+      type: object
+      properties:
+        max_cost_per_execution:
+          type: number
+          default: 1.0
+        max_tokens_per_execution:
+          type: integer
+          default: 100000
+
+    ExecuteAgentRequest:
+      type: object
+      required: [input]
+      properties:
+        input:
+          type: string
+        context:
+          type: object
+        options:
+          type: object
+          properties:
+            async:
+              type: boolean
+              default: false
+
+    AgentExecutionResult:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            response:
+              type: string
+            citations:
+              type: array
+              items:
+                $ref: '#/components/schemas/Citation'
+            cost:
+              type: object
+              properties:
+                tokens_in:
+                  type: integer
+                tokens_out:
+                  type: integer
+                cost_usd:
+                  type: number
+            duration_ms:
+              type: integer
+
+    # ---- Workflow Schemas ----
+    CreateWorkflowRequest:
+      type: object
+      required: [name, dag_definition]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        dag_definition:
+          type: object
+          required: [nodes, edges]
+          properties:
+            nodes:
+              type: array
+              items:
+                type: object
+            edges:
+              type: array
+              items:
+                type: object
+        variables:
+          type: object
+
+    ExecuteWorkflowRequest:
+      type: object
+      properties:
+        input_data:
+          type: object
+        options:
+          type: object
+          properties:
+            async:
+              type: boolean
+              default: true
+            webhook_url:
+              type: string
+              format: uri
+
+    ExecutionCreatedResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            execution_id:
+              type: string
+              format: uuid
+            workflow_id:
+              type: string
+              format: uuid
+            status:
+              type: string
+            websocket_url:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+
+    ApproveStepRequest:
+      type: object
+      required: [step_id, decision]
+      properties:
+        step_id:
+          type: string
+        decision:
+          type: string
+          enum: [approve, reject]
+        comment:
+          type: string
+
+    # ---- RAG Schemas ----
+    CreateKnowledgeBaseRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        chunking_config:
+          type: object
+          properties:
+            strategy:
+              type: string
+              enum: [fixed, recursive, semantic]
+              default: recursive
+            chunk_size:
+              type: integer
+              default: 512
+            chunk_overlap:
+              type: integer
+              default: 50
+        embedding_config:
+          type: object
+          properties:
+            provider:
+              type: string
+              default: openai
+            model:
+              type: string
+              default: text-embedding-3-small
+
+    RAGSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          maxLength: 2000
+        knowledge_base_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 5
+        search_type:
+          type: string
+          enum: [vector, keyword, hybrid]
+          default: hybrid
+        filters:
+          type: object
+          properties:
+            metadata:
+              type: object
+            date_range:
+              type: object
+              properties:
+                from:
+                  type: string
+                  format: date
+                to:
+                  type: string
+                  format: date
+        options:
+          type: object
+          properties:
+            include_chunks:
+              type: boolean
+              default: true
+            min_relevance_score:
+              type: number
+              minimum: 0
+              maximum: 1
+
+    RAGSearchResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            results:
+              type: array
+              items:
+                type: object
+                properties:
+                  chunk_id:
+                    type: string
+                    format: uuid
+                  document_id:
+                    type: string
+                    format: uuid
+                  content:
+                    type: string
+                  relevance_score:
+                    type: number
+                  citation:
+                    $ref: '#/components/schemas/Citation'
+                  metadata:
+                    type: object
+            query_metadata:
+              type: object
+              properties:
+                total_results:
+                  type: integer
+                search_type:
+                  type: string
+                latency_ms:
+                  type: integer
+
+    Citation:
+      type: object
+      properties:
+        document_name:
+          type: string
+        page_number:
+          type: integer
+        section:
+          type: string
+
+    # ---- Voice Schemas ----
+    CreateVoiceSessionRequest:
+      type: object
+      properties:
+        agent_id:
+          type: string
+          format: uuid
+        stt_provider:
+          type: string
+          enum: [whisper, deepgram, google, azure]
+          default: whisper
+        tts_provider:
+          type: string
+          enum: [coqui, elevenlabs, google, azure]
+          default: coqui
+        language:
+          type: string
+          default: en
+        options:
+          type: object
+          properties:
+            noise_cancellation:
+              type: boolean
+              default: true
+            vad_enabled:
+              type: boolean
+              default: true
+            record_audio:
+              type: boolean
+              default: false
+
+    # ---- Edge Schemas ----
+    RegisterDeviceRequest:
+      type: object
+      required: [device_name, device_type]
+      properties:
+        device_name:
+          type: string
+          maxLength: 255
+        device_type:
+          type: string
+          enum: [jetson_nano, jetson_orin, intel_ncs, coral_tpu, generic_arm64, generic_x86]
+        hardware_info:
+          type: object
+          properties:
+            cpu:
+              type: string
+            ram_gb:
+              type: number
+            gpu:
+              type: string
+            storage_gb:
+              type: number
+        certificate:
+          type: string
+          description: PEM-encoded device certificate
+
+    # ---- Common Schemas ----
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        version:
+          type: string
+        uptime_seconds:
+          type: integer
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+
+    Pagination:
+      type: object
+      properties:
+        cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+        total_count:
+          type: integer
+        page_size:
+          type: integer
+
+    ProblemDetail:
+      type: object
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        request_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+  responses:
+    Unauthorized:
+      description: Authentication required or credentials invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    Conflict:
+      description: Resource conflict (e.g., duplicate email)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds to wait before retrying
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'

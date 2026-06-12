@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "rag-service"
+version = "0.1.0"
+description = "EAIOC RAG and Vector Store Service"
+authors = ["EAIOC Team <team@eaioc.dev>"]
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+minio = "^7.2.4"
+python-multipart = "^0.0.6"
+langchain-text-splitters = "^0.0.1"
+eaioc-core = {path = "../../packages/eaioc-core", develop = true}
+eaioc-database = {path = "../../packages/eaioc-database", develop = true}
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

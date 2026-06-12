@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "agent-engine"
+version = "0.1.0"
+description = "EAIOC Agent Orchestration Engine"
+authors = ["EAIOC Team <team@eaioc.dev>"]
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+websockets = "^12.0"
+tiktoken = "^0.5.2"
+redis = "^5.0.1"
+eaioc-core = {path = "../../packages/eaioc-core", develop = true}
+eaioc-database = {path = "../../packages/eaioc-database", develop = true}
+eaioc-events = {path = "../../packages/eaioc-events", develop = true}
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

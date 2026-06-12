@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "edge-manager"
+version = "0.1.0"
+description = "EAIOC Edge Device Management Service"
+authors = ["EAIOC Team <team@eaioc.dev>"]
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+eaioc-core = {path = "../../packages/eaioc-core", develop = true}
+eaioc-database = {path = "../../packages/eaioc-database", develop = true}
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

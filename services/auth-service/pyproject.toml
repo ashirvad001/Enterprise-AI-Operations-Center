@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "auth-service"
+version = "0.1.0"
+description = "EAIOC Authentication Service"
+authors = ["EAIOC Team <team@eaioc.dev>"]
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+passlib = {extras = ["argon2"], version = "^1.7.4"}
+pyjwt = {extras = ["crypto"], version = "^2.8.0"}
+python-multipart = "^0.0.6"
+eaioc-core = {path = "../../packages/eaioc-core", develop = true}
+eaioc-database = {path = "../../packages/eaioc-database", develop = true}
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

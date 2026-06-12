@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "eaioc-events"
+version = "0.1.0"
+description = "Event schemas and Redis Streams wrappers for Enterprise AI Operations Center"
+authors = ["EAIOC Team <team@eaioc.dev>"]
+readme = "README.md"
+packages = [{include = "eaioc_events"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pydantic = "^2.5.3"
+redis = "^5.0.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+ruff = "^0.2.1"
+mypy = "^1.8.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
