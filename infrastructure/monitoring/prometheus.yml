@@ -1,0 +1,81 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: production
+    cluster: eaioc-prod
+
+# Alerting configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []  # Configure Alertmanager endpoint here
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+
+  # Agent Engine
+  - job_name: agent-engine
+    metrics_path: /metrics
+    scrape_interval: 10s
+    static_configs:
+      - targets: [agent-engine:8003]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: agent-engine
+
+  # RAG Service
+  - job_name: rag-service
+    metrics_path: /metrics
+    scrape_interval: 10s
+    static_configs:
+      - targets: [rag-service:8004]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: rag-service
+
+  # Multimodal Service
+  - job_name: multimodal-service
+    metrics_path: /metrics
+    scrape_interval: 10s
+    static_configs:
+      - targets: [multimodal-service:8005]
+
+  # Voice Service
+  - job_name: voice-service
+    metrics_path: /metrics
+    scrape_interval: 10s
+    static_configs:
+      - targets: [voice-service:8006]
+
+  # Ollama (edge LLM runtime)
+  - job_name: ollama
+    metrics_path: /metrics
+    scrape_interval: 30s
+    static_configs:
+      - targets: [ollama:11434]
+
+  # Redis (via redis_exporter)
+  - job_name: redis
+    static_configs:
+      - targets: [redis:9121]  # redis_exporter sidecar
+
+  # PostgreSQL (via postgres_exporter)
+  - job_name: postgres
+    static_configs:
+      - targets: [postgres:9187]  # postgres_exporter sidecar
+
+  # Node exporter (host metrics)
+  - job_name: node
+    static_configs:
+      - targets: [node-exporter:9100]
+
+# Recording rules for RAGAS metrics aggregation
+rule_files:
+  - /etc/prometheus/rules/*.yml

@@ -1,9 +1,27 @@
-version: '3.8'
+version: '3.9'
+
+networks:
+  api_net:
+    driver: bridge
+  db_net:
+    driver: bridge
+  monitor_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  weaviate_data:
+  ollama_data:
+  prometheus_data:
+  grafana_data:
 
 services:
-  # ---------------------------------------------------------
-  # PostgreSQL with pgvector (Primary Database)
-  # ---------------------------------------------------------
+  # ==========================================================================
+  # Infrastructure Layer
+  # ==========================================================================
+
   postgres:
     image: ankane/pgvector:v0.5.1
     container_name: eaioc_postgres
@@ -17,15 +35,13 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+    networks: [db_net]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eaioc_admin} -d ${POSTGRES_DB:-eaioc_db}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eaioc_admin}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ---------------------------------------------------------
-  # Redis (Cache, Sessions, Pub/Sub Streams)
-  # ---------------------------------------------------------
   redis:
     image: redis:7.2-alpine
     container_name: eaioc_redis
@@ -35,15 +51,13 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    networks: [db_net]
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-eaioc_redis_local}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ---------------------------------------------------------
-  # MinIO (S3-compatible Object Storage)
-  # ---------------------------------------------------------
   minio:
     image: minio/minio:RELEASE.2023-11-20T22-40-07Z
     container_name: eaioc_minio
@@ -53,25 +67,24 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-eaioc_minio_secret}
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000" # API API
-      - "9001:9001" # Console UI
+      - "9000:9000"
+      - "9001:9001"
     volumes:
       - minio_data:/data
+    networks: [db_net]
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ---------------------------------------------------------
-  # MinIO Setup (Creates buckets automatically)
-  # ---------------------------------------------------------
   minio-setup:
     image: minio/mc:RELEASE.2023-11-20T16-30-59Z
     container_name: eaioc_minio_setup
     depends_on:
       minio:
         condition: service_healthy
+    networks: [db_net]
     entrypoint: >
       /bin/sh -c "
       /usr/bin/mc config host add myminio http://minio:9000 ${MINIO_ROOT_USER:-eaioc_minio_admin} ${MINIO_ROOT_PASSWORD:-eaioc_minio_secret};
@@ -83,7 +96,144 @@ services:
       exit 0;
       "
 
-volumes:
-  postgres_data:
-  redis_data:
-  minio_data:
+  # Ollama — local LLM inference
+  ollama:
+    image: ollama/ollama:latest
+    container_name: eaioc_ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks: [api_net]
+    environment:
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_MAX_LOADED_MODELS=1
+    # GPU support (uncomment for NVIDIA GPU)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ==========================================================================
+  # Application Services
+  # ==========================================================================
+
+  agent-engine:
+    build:
+      context: ../../services/agent-engine
+      dockerfile: Dockerfile
+    container_name: eaioc_agent_engine
+    restart: unless-stopped
+    ports:
+      - "${AGENT_ENGINE_PORT:-8003}:8003"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-eaioc_redis_local}@redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-eaioc_admin}:${POSTGRES_PASSWORD:-eaioc_secret_pass_local}@postgres:5432/${POSTGRES_DB:-eaioc_db}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - AUTO_APPROVE_CHECKPOINT=true
+    networks: [api_net, db_net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  rag-service:
+    build:
+      context: ../../services/rag-service
+      dockerfile: Dockerfile
+    container_name: eaioc_rag_service
+    restart: unless-stopped
+    ports:
+      - "${RAG_SERVICE_PORT:-8004}:8004"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-eaioc_admin}:${POSTGRES_PASSWORD:-eaioc_secret_pass_local}@postgres:5432/${POSTGRES_DB:-eaioc_db}
+      - MINIO_ENDPOINT=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER:-eaioc_minio_admin}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-eaioc_minio_secret}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    networks: [api_net, db_net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  multimodal-service:
+    build:
+      context: ../../services/multimodal-service
+      dockerfile: Dockerfile
+    container_name: eaioc_multimodal
+    restart: unless-stopped
+    ports:
+      - "8005:8005"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - MINIO_ENDPOINT=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER:-eaioc_minio_admin}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-eaioc_minio_secret}
+    networks: [api_net, db_net]
+
+  voice-service:
+    build:
+      context: ../../services/voice-service
+      dockerfile: Dockerfile
+    container_name: eaioc_voice
+    restart: unless-stopped
+    ports:
+      - "8006:8006"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - AZURE_SPEECH_KEY=${AZURE_SPEECH_KEY:-}
+      - AZURE_SPEECH_REGION=${AZURE_SPEECH_REGION:-eastus}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - WHISPER_MODEL_SIZE=base
+      - WHISPER_BACKEND=auto
+    networks: [api_net]
+
+  # ==========================================================================
+  # Monitoring Layer
+  # ==========================================================================
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: eaioc_prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    networks: [monitor_net, api_net]
+
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: eaioc_grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-eaioc_grafana_admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana:/etc/grafana/provisioning:ro
+    networks: [monitor_net]
+    depends_on:
+      - prometheus

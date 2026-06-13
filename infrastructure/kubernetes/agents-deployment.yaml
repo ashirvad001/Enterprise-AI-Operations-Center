@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eaioc-agent-engine
+  namespace: eaioc-production
+  labels:
+    app: agent-engine
+    version: "1.0.0"
+    component: ai-agents
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: agent-engine
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: agent-engine
+        version: "1.0.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8003"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: eaioc-agent-engine-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: agent-engine
+          image: eaioc/agent-engine:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8003
+              name: http
+              protocol: TCP
+          env:
+            - name: ENVIRONMENT
+              value: "production"
+            - name: OLLAMA_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: eaioc-config
+                  key: ollama_base_url
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eaioc-secrets
+                  key: openai_api_key
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: eaioc-secrets
+                  key: database_url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: eaioc-secrets
+                  key: redis_url
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: eaioc-secrets
+                  key: github_token
+                  optional: true
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8003
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8003
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp-vol
+              mountPath: /tmp
+      volumes:
+        - name: tmp-vol
+          emptyDir: {}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: agent-engine
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eaioc-agent-engine-svc
+  namespace: eaioc-production
+  labels:
+    app: agent-engine
+spec:
+  type: LoadBalancer
+  selector:
+    app: agent-engine
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8003
+      protocol: TCP
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: eaioc-agent-engine-hpa
+  namespace: eaioc-production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: eaioc-agent-engine
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

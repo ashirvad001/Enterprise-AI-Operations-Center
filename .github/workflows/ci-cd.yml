@@ -1,0 +1,233 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository_owner }}/eaioc
+
+jobs:
+  # ============================================================
+  # Code Quality & Testing
+  # ============================================================
+  test-agent-engine:
+    name: Test Agent Engine
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/agent-engine
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-cov ruff black
+
+      - name: Lint with ruff
+        run: ruff check .
+
+      - name: Format check with black
+        run: black --check .
+
+      - name: Run unit & integration tests
+        run: |
+          pytest tests/ -v \
+            --cov=app \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --tb=short \
+            -m "not slow"
+        env:
+          ENVIRONMENT: test
+          AUTO_APPROVE_CHECKPOINT: "true"
+          OLLAMA_BASE_URL: http://localhost:11434
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: coverage.xml
+          flags: agent-engine
+
+  test-rag-service:
+    name: Test RAG Service
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/rag-service
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest pytest-asyncio pytest-cov ruff
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v \
+            --cov=app \
+            --cov-report=xml \
+            --tb=short
+        env:
+          ENVIRONMENT: test
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: coverage.xml
+          flags: rag-service
+
+  # ============================================================
+  # Docker Build & Push
+  # ============================================================
+  build-and-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [test-agent-engine, test-rag-service]
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        service: [agent-engine, rag-service, multimodal-service, voice-service]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: services/${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================================
+  # Kubernetes Deployment
+  # ============================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: v1.29.0
+
+      - name: Set kubeconfig
+        run: echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+
+      - name: Deploy agent engine
+        run: |
+          kubectl set image deployment/eaioc-agent-engine \
+            agent-engine=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/agent-engine:sha-${{ github.sha }} \
+            -n eaioc-production
+          kubectl rollout status deployment/eaioc-agent-engine -n eaioc-production --timeout=5m
+
+      - name: Deploy RAG service
+        run: |
+          kubectl set image deployment/eaioc-rag-service \
+            rag-service=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/rag-service:sha-${{ github.sha }} \
+            -n eaioc-production
+          kubectl rollout status deployment/eaioc-rag-service -n eaioc-production --timeout=5m
+
+      - name: Health Gate — verify error rate
+        run: |
+          sleep 60
+          ERROR_RATE=$(curl -s "http://prometheus.eaioc-monitoring.svc/api/v1/query?query=rate(http_requests_total{status=~'5..'}[5m])" \
+            | jq '.data.result[0].value[1]' -r)
+          echo "5xx error rate: $ERROR_RATE"
+          THRESHOLD=0.05
+          if (( $(echo "$ERROR_RATE > $THRESHOLD" | bc -l) )); then
+            echo "ERROR RATE $ERROR_RATE exceeds threshold $THRESHOLD — triggering rollback"
+            kubectl rollout undo deployment/eaioc-agent-engine -n eaioc-production
+            kubectl rollout undo deployment/eaioc-rag-service -n eaioc-production
+            exit 1
+          fi
+          echo "Health gate passed (error rate: $ERROR_RATE)"
+
+  # ============================================================
+  # RAGAS Evaluation (nightly)
+  # ============================================================
+  ragas-evaluation:
+    name: Nightly RAGAS Evaluation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    schedule:
+      - cron: '0 2 * * *'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install RAGAS dependencies
+        run: pip install ragas datasets openai sentence-transformers matplotlib
+
+      - name: Run RAGAS evaluation
+        run: |
+          cd services/rag-service
+          python -m app.evaluation.ragas_harness
+          python -m app.evaluation.benchmark_plots ragas_results.json
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Upload RAGAS results
+        uses: actions/upload-artifact@v4
+        with:
+          name: ragas-evaluation-${{ github.sha }}
+          path: |
+            services/rag-service/ragas_results.json
+            services/rag-service/evaluation_outputs/

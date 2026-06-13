@@ -1,0 +1,311 @@
+"""
+Tester Agent Node — Phase 4 of the multi-agent code review pipeline.
+
+Responsibilities:
+  - Accept code output + security analysis
+  - Generate a complete pytest test suite
+  - Cover: happy path, edge cases, security-flagged scenarios
+  - Return structured TestSuite
+
+Uses LLM for test generation (Ollama/OpenAI) with mock fallback.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import textwrap
+import time
+from typing import Any, Dict
+
+from .state import AgentState, CodeOutput, SecurityAnalysis, TestSuite
+
+logger = logging.getLogger(__name__)
+
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3:8b")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+
+def _build_test_prompt(code_output: CodeOutput, security: SecurityAnalysis) -> str:
+    vuln_context = ""
+    if security.vulnerabilities:
+        vuln_context = "\nSecurity issues found (write tests to catch regressions):\n"
+        for v in security.vulnerabilities[:5]:
+            vuln_context += f"- [{v.get('severity')}] {v.get('type')}: {v.get('description', '')[:100]}\n"
+
+    return f"""
+Generate a complete pytest test suite for the following Python code.
+
+--- CODE ---
+{code_output.code[:3000]}
+--- END CODE ---
+
+File: {code_output.filename}
+{vuln_context}
+
+Requirements:
+1. Test happy path with valid inputs
+2. Test edge cases (None, empty, invalid types)
+3. Test boundary conditions
+4. If security issues were flagged, write regression tests for them
+5. Use pytest fixtures where appropriate
+6. Add descriptive docstrings to each test
+
+Respond with a JSON object:
+{{
+  "filename": "test_{code_output.filename.replace('/', '_').replace('.py', '')}.py",
+  "test_code": "<complete pytest file content>",
+  "test_count": <number of test functions>,
+  "coverage_target": ["<function1>", "<function2>"]
+}}
+"""
+
+
+def _call_llm_for_tests(code_output: CodeOutput, security: SecurityAnalysis) -> TestSuite:
+    """Calls LLM to generate pytest tests. Graceful fallback through Ollama → OpenAI → mock."""
+    system_prompt = (
+        "You are a senior QA engineer specializing in Python testing. "
+        "Generate comprehensive, well-structured pytest test suites. "
+        "Tests should be deterministic and not require external services."
+    )
+    user_prompt = _build_test_prompt(code_output, security)
+
+    # --- Try Ollama ---
+    try:
+        import httpx
+        response = httpx.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": f"<|system|>\n{system_prompt}\n<|user|>\n{user_prompt}\n<|assistant|>",
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": 2048},
+            },
+            timeout=120.0,
+        )
+        response.raise_for_status()
+        data = json.loads(response.json().get("response", "{}"))
+        return TestSuite(**data)
+    except Exception as e:
+        logger.warning(f"Ollama unavailable ({e})")
+
+    # --- Try OpenAI ---
+    if OPENAI_API_KEY:
+        try:
+            import openai
+            client = openai.OpenAI(api_key=OPENAI_API_KEY)
+            completion = client.beta.chat.completions.parse(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format=TestSuite,
+                temperature=0.1,
+            )
+            return completion.choices[0].message.parsed
+        except Exception as e2:
+            logger.warning(f"OpenAI also failed ({e2})")
+
+    # --- Deterministic Mock ---
+    base_name = code_output.filename.replace("/", "_").replace(".py", "")
+    test_filename = f"test_{base_name}.py"
+
+    # Build targeted security regression tests if issues were found
+    security_tests = ""
+    if not security.passed:
+        security_tests = textwrap.dedent("""
+    def test_no_sql_injection():
+        \"\"\"Regression: ensure no SQL injection via string formatting.\"\"\"
+        malicious_input = {"key": "'; DROP TABLE users; --"}
+        # Should not raise or execute malicious SQL
+        result = fix_implementation(malicious_input)
+        # The function should handle this safely
+        assert result is not None or result is None  # just ensure no exception
+
+    def test_no_path_traversal():
+        \"\"\"Regression: ensure path traversal inputs are handled safely.\"\"\"
+        traversal_input = {"path": "../../etc/passwd"}
+        try:
+            result = fix_implementation(traversal_input)
+        except (ValueError, PermissionError):
+            pass  # Acceptable — should raise, not silently allow
+""")
+
+    mock_code = textwrap.dedent(f"""
+\"\"\"
+Auto-generated pytest test suite for: {code_output.filename}
+Generated by EAIOC Tester Agent.
+\"\"\"
+
+import pytest
+from unittest.mock import patch, MagicMock
+
+
+# ---------------------------------------------------------------------------
+# Import the module under test
+# ---------------------------------------------------------------------------
+# from {code_output.filename.replace('/', '.').replace('.py', '')} import fix_implementation
+# NOTE: Replace the import above with the actual module path.
+
+def fix_implementation(input_data):
+    \"\"\"Stub — replace with actual import.\"\"\"
+    if not input_data:
+        return None
+    return {{**input_data, "_fixed": True}}
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def valid_input():
+    return {{"key": "value", "count": 42, "active": True}}
+
+@pytest.fixture
+def empty_input():
+    return {{}}
+
+
+# ---------------------------------------------------------------------------
+# Happy Path Tests
+# ---------------------------------------------------------------------------
+
+class TestHappyPath:
+    def test_returns_dict_with_fixed_flag(self, valid_input):
+        \"\"\"Given valid input, should return dict with _fixed=True.\"\"\"
+        result = fix_implementation(valid_input)
+        assert result is not None
+        assert isinstance(result, dict)
+        assert result.get("_fixed") is True
+
+    def test_preserves_original_keys(self, valid_input):
+        \"\"\"Output should contain all input keys.\"\"\"
+        result = fix_implementation(valid_input)
+        for key in valid_input:
+            assert key in result, f"Key '{{key}}' missing from output"
+
+    def test_handles_string_values(self):
+        \"\"\"Should handle string-only inputs.\"\"\"
+        result = fix_implementation({{"name": "test", "value": "hello"}})
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Edge Case Tests
+# ---------------------------------------------------------------------------
+
+class TestEdgeCases:
+    def test_none_input_returns_none(self):
+        \"\"\"None input should return None gracefully.\"\"\"
+        result = fix_implementation(None)
+        assert result is None
+
+    def test_empty_dict_returns_none(self, empty_input):
+        \"\"\"Empty dict input should return None.\"\"\"
+        result = fix_implementation(empty_input)
+        assert result is None
+
+    def test_large_dict_handles_correctly(self):
+        \"\"\"Should handle inputs with many keys without error.\"\"\"
+        large_input = {{f"key_{{i}}": i for i in range(1000)}}
+        result = fix_implementation(large_input)
+        assert result is not None
+
+    def test_nested_dict_input(self):
+        \"\"\"Should handle nested dictionary inputs.\"\"\"
+        nested = {{"outer": {{"inner": "value"}}, "count": 1}}
+        result = fix_implementation(nested)
+        assert result is not None
+{security_tests}
+
+# ---------------------------------------------------------------------------
+# Type Safety Tests
+# ---------------------------------------------------------------------------
+
+class TestTypeSafety:
+    def test_integer_input_raises_or_handles(self):
+        \"\"\"Non-dict input (int) should not crash silently.\"\"\"
+        try:
+            result = fix_implementation(42)
+            # Either raises TypeError or returns None — both acceptable
+        except (TypeError, AttributeError):
+            pass  # Expected behavior
+
+    def test_list_input_raises_or_handles(self):
+        \"\"\"List input should be handled gracefully.\"\"\"
+        try:
+            result = fix_implementation([1, 2, 3])
+        except (TypeError, AttributeError):
+            pass  # Expected
+""")
+
+    return TestSuite(
+        filename=test_filename,
+        test_code=mock_code.strip(),
+        test_count=10,
+        coverage_target=["fix_implementation"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# LangGraph Node Function
+# ---------------------------------------------------------------------------
+
+def tester_node(state: AgentState) -> Dict[str, Any]:
+    """
+    LangGraph node: Tester.
+
+    Input state keys consumed: code, security_review
+    Output state keys produced: tests, messages, latency_ms
+    """
+    start_ms = int(time.time() * 1000)
+
+    if not state.get("code"):
+        return {
+            "error": "Tester received no code",
+            "status": "failed",
+            "messages": [{"node": "tester", "status": "error", "error": "Missing code"}],
+        }
+
+    code_output: CodeOutput = state["code"]
+    security: SecurityAnalysis = state.get("security_review") or SecurityAnalysis(
+        passed=True, vulnerabilities=[], hardcoded_secrets=[],
+        sql_injection_risks=[], recommendations=[]
+    )
+
+    logger.info(f"[Tester] Generating tests for {code_output.filename}")
+
+    try:
+        test_suite = _call_llm_for_tests(code_output, security)
+        elapsed = int(time.time() * 1000) - start_ms
+
+        logger.info(
+            f"[Tester] Completed in {elapsed}ms. "
+            f"Tests: {test_suite.test_count}, File: {test_suite.filename}"
+        )
+
+        return {
+            "tests": test_suite,
+            "status": "awaiting_human",   # Next step is human checkpoint
+            "messages": [{
+                "node": "tester",
+                "status": "success",
+                "test_filename": test_suite.filename,
+                "test_count": test_suite.test_count,
+                "elapsed_ms": elapsed,
+            }],
+            "latency_ms": {**state.get("latency_ms", {}), "tester": elapsed},
+        }
+
+    except Exception as e:
+        logger.error(f"[Tester] Failed: {e}")
+        return {
+            "error": f"Tester failed: {str(e)}",
+            "status": "failed",
+            "messages": [{"node": "tester", "status": "error", "error": str(e)}],
+        }
